@@ -61,6 +61,9 @@ class GossipNode:
         self._pending_pings: dict[str, float] = {}  # ping_id -> send_time
         self._ping_seq: int = 0
 
+        # stats
+        self.stats_sent: int = 0  # total messages sent
+
         # graceful shutdown
         self._running = False
 
@@ -96,6 +99,8 @@ class GossipNode:
             pass
         finally:
             self.transport.close()
+            logger.info("STATS sent=%d peers=%d seen=%d",
+                        self.stats_sent, len(self.peers), len(self.seen))
             logger.info("node stopped")
 
     def stop(self):
@@ -375,6 +380,8 @@ class GossipNode:
         try:
             host, port_s = addr.rsplit(":", 1)
             self.transport.sendto(msg.to_bytes(), (host, int(port_s)))
+            self.stats_sent += 1
+            logger.debug("SENT %s -> %s", msg.msg_type, addr)
         except Exception as exc:
             logger.warning("send failed -> %s: %s", addr, exc)
 
@@ -384,18 +391,29 @@ class GossipNode:
         os.makedirs(self._log_dir, exist_ok=True)
         log_file = os.path.join(self._log_dir, f"node_{self.cfg.port}.log")
 
-        formatter = logging.Formatter(
-            f"%(asctime)s [{self.cfg.port}] %(message)s",
-            datefmt="%H:%M:%S",
-        )
+        # Include epoch_ms in each line for analysis scripts
+        class _EpochFormatter(logging.Formatter):
+            def __init__(self, port):
+                super().__init__()
+                self.port = port
+
+            def format(self, record):
+                epoch_ms = int(record.created * 1000)
+                ts = time.strftime("%H:%M:%S", time.localtime(record.created))
+                ms = int(record.created * 1000) % 1000
+                return f"{ts}.{ms:03d} [{self.port}] [{epoch_ms}] {record.getMessage()}"
+
+        formatter = _EpochFormatter(self.cfg.port)
 
         # file handler
         fh = logging.FileHandler(log_file, mode="w")
         fh.setFormatter(formatter)
+        fh.setLevel(logging.DEBUG)
 
-        # console handler
+        # console handler (less verbose)
         ch = logging.StreamHandler()
         ch.setFormatter(formatter)
+        ch.setLevel(logging.INFO)
 
         root = logging.getLogger("gossip")
         root.setLevel(logging.DEBUG)
