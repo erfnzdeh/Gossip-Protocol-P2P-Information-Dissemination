@@ -17,6 +17,7 @@ from typing import Optional
 
 from .config import GossipConfig
 from .message import Message
+from .pow import compute_pow, validate_pow
 
 logger = logging.getLogger("gossip")
 
@@ -61,6 +62,9 @@ class GossipNode:
         self._pending_pings: dict[str, float] = {}  # ping_id -> send_time
         self._ping_seq: int = 0
 
+        # PoW (computed in run() if pow_k > 0)
+        self.pow_data: Optional[dict] = None
+
         # stats
         self.stats_sent: int = 0  # total messages sent
 
@@ -83,6 +87,15 @@ class GossipNode:
 
         logger.info("node started  id=%s  addr=%s", self.node_id, self.addr)
 
+        # compute PoW if enabled
+        if self.cfg.pow_k > 0:
+            logger.info("computing PoW  k=%d ...", self.cfg.pow_k)
+            self.pow_data = compute_pow(self.node_id, self.cfg.pow_k)
+            logger.info("PoW found  nonce=%d  digest=%s  elapsed=%.1fms",
+                        self.pow_data["nonce"],
+                        self.pow_data["digest_hex"][:16],
+                        self.pow_data["elapsed_ms"])
+
         # bootstrap
         if self.cfg.bootstrap:
             await self._bootstrap()
@@ -92,6 +105,10 @@ class GossipNode:
             asyncio.create_task(self._ping_loop()),
             asyncio.create_task(self._input_loop()),
         ]
+        if self.cfg.mode == "hybrid":
+            tasks.append(asyncio.create_task(self._pull_loop()))
+            logger.info("hybrid mode enabled  pull_interval=%s  ihave_max_ids=%d",
+                        self.cfg.pull_interval, self.cfg.ihave_max_ids)
 
         try:
             await asyncio.gather(*tasks)
@@ -115,8 +132,8 @@ class GossipNode:
         seed_addr = self.cfg.bootstrap
         logger.info("bootstrap  -> %s", seed_addr)
 
-        # send HELLO
-        hello = Message.hello(self.node_id, self.addr)
+        # send HELLO (with PoW if enabled)
+        hello = Message.hello(self.node_id, self.addr, pow_data=self.pow_data)
         self._send_to_addr(hello, seed_addr)
 
         # send GET_PEERS
@@ -151,6 +168,15 @@ class GossipNode:
 
     def _handle_hello(self, msg: Message):
         logger.info("HELLO from %s (%s)", msg.sender_addr, msg.sender_id[:8])
+
+        # validate PoW if required
+        if self.cfg.pow_k > 0:
+            pow_data = msg.payload.get("pow")
+            if not validate_pow(msg.sender_id, pow_data, self.cfg.pow_k):
+                logger.warning("HELLO rejected: invalid PoW from %s",
+                               msg.sender_addr)
+                return
+
         self._add_peer(msg.sender_id, msg.sender_addr)
 
         # reply with our peer list so the newcomer can discover the network
@@ -159,6 +185,13 @@ class GossipNode:
     def _handle_get_peers(self, msg: Message):
         max_peers = msg.payload.get("max_peers", 20)
         logger.info("GET_PEERS from %s (max=%d)", msg.sender_addr, max_peers)
+
+        # only add sender as peer if PoW not required or already known
+        if self.cfg.pow_k > 0 and msg.sender_addr not in self.peers:
+            logger.warning("GET_PEERS ignored: %s not authenticated (no HELLO with PoW)",
+                           msg.sender_addr)
+            return
+
         self._add_peer(msg.sender_id, msg.sender_addr)
         self._send_peers_list(msg.sender_addr, max_peers)
 
@@ -320,6 +353,24 @@ class GossipNode:
                                         seq=self._ping_seq)
                     self._pending_pings[ping.payload["ping_id"]] = now
                     self._send_to_addr(ping, addr)
+
+    async def _pull_loop(self):
+        """Hybrid mode: periodically send IHAVE to peers so they can request missing msgs."""
+        while self._running:
+            await asyncio.sleep(self.cfg.pull_interval)
+            if not self.peers or not self.seen:
+                continue
+
+            # pick recent msg_ids to announce
+            recent_ids = list(self.seen)[-self.cfg.ihave_max_ids:]
+
+            # send to fanout peers
+            k = min(self.cfg.fanout, len(self.peers))
+            targets = self.rng.sample(list(self.peers.keys()), k)
+            ihave_msg = Message.ihave(self.node_id, self.addr, recent_ids,
+                                      max_ids=self.cfg.ihave_max_ids)
+            for addr in targets:
+                self._send_to_addr(ihave_msg, addr)
 
     async def _input_loop(self):
         """Read lines from stdin and broadcast as GOSSIP messages."""
