@@ -309,16 +309,18 @@ class GossipNode:
         if k == 0:
             return
         targets = self.rng.sample(candidates, k)
+
+        # build the forwarded message once and reuse for all targets
+        fwd = Message.gossip(
+            self.node_id, self.addr,
+            data=original.payload.get("data", ""),
+            origin_id=original.payload.get("origin_id", self.node_id),
+            ttl=new_ttl,
+            topic=original.payload.get("topic", "news"),
+            origin_timestamp_ms=original.payload.get("origin_timestamp_ms"),
+            msg_id=original.msg_id,
+        )
         for target_addr in targets:
-            fwd = Message.gossip(
-                self.node_id, self.addr,
-                data=original.payload.get("data", ""),
-                origin_id=original.payload.get("origin_id", self.node_id),
-                ttl=new_ttl,
-                topic=original.payload.get("topic", "news"),
-                origin_timestamp_ms=original.payload.get("origin_timestamp_ms"),
-                msg_id=original.msg_id,
-            )
             self._send_to_addr(fwd, target_addr)
             logger.info("GOSSIP fwd   msg_id=%s -> %s  ttl=%d",
                          original.msg_id[:8], target_addr, new_ttl)
@@ -451,14 +453,7 @@ class GossipNode:
             return
         targets = self.rng.sample(candidates, k)
         for addr in targets:
-            fwd = Message.gossip(
-                self.node_id, self.addr,
-                data=data, origin_id=self.node_id,
-                ttl=self.cfg.ttl,
-                msg_id=msg.msg_id,
-                origin_timestamp_ms=msg.payload["origin_timestamp_ms"],
-            )
-            self._send_to_addr(fwd, addr)
+            self._send_to_addr(msg, addr)
 
     # -- transport helpers ----------------------------------------------------
 
