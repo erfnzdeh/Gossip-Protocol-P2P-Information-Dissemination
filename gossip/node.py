@@ -362,6 +362,12 @@ class GossipNode:
             for addr in dead:
                 self._remove_peer(addr)
 
+            # clean up stale pending pings (no PONG received in time)
+            stale_pings = [pid for pid, t in self._pending_pings.items()
+                           if now - t > self.cfg.peer_timeout]
+            for pid in stale_pings:
+                del self._pending_pings[pid]
+
             # send PINGs to a subset of remaining peers
             if self.peers:
                 k = min(self.cfg.fanout, len(self.peers))
