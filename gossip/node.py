@@ -92,10 +92,12 @@ class GossipNode:
 
         logger.info("node started  id=%s  addr=%s", self.node_id, self.addr)
 
-        # compute PoW if enabled
+        # compute PoW if enabled (in executor to avoid blocking the event loop)
         if self.cfg.pow_k > 0:
             logger.info("computing PoW  k=%d ...", self.cfg.pow_k)
-            self.pow_data = compute_pow(self.node_id, self.cfg.pow_k)
+            self.pow_data = await self.loop.run_in_executor(
+                None, compute_pow, self.node_id, self.cfg.pow_k
+            )
             logger.info("PoW found  nonce=%d  digest=%s  elapsed=%.1fms",
                         self.pow_data["nonce"],
                         self.pow_data["digest_hex"][:16],
