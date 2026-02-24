@@ -72,6 +72,18 @@ class GossipNode:
         # stats
         self.stats_sent: int = 0  # total messages sent
 
+        # message dispatch table (built once, not per packet)
+        self._handlers: dict[str, callable] = {
+            "HELLO": self._handle_hello,
+            "GET_PEERS": self._handle_get_peers,
+            "PEERS_LIST": self._handle_peers_list,
+            "GOSSIP": self._handle_gossip,
+            "PING": self._handle_ping,
+            "PONG": self._handle_pong,
+            "IHAVE": self._handle_ihave,
+            "IWANT": self._handle_iwant,
+        }
+
         # graceful shutdown
         self._running = False
 
@@ -168,17 +180,7 @@ class GossipNode:
             self.log.warning("bad packet from %s:%d", *addr)
             return
 
-        handler = {
-            "HELLO": self._handle_hello,
-            "GET_PEERS": self._handle_get_peers,
-            "PEERS_LIST": self._handle_peers_list,
-            "GOSSIP": self._handle_gossip,
-            "PING": self._handle_ping,
-            "PONG": self._handle_pong,
-            "IHAVE": self._handle_ihave,
-            "IWANT": self._handle_iwant,
-        }.get(msg.msg_type)
-
+        handler = self._handlers.get(msg.msg_type)
         if handler:
             handler(msg)
 
