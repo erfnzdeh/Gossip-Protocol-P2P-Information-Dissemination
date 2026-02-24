@@ -7,6 +7,7 @@ Runs three concurrent asyncio tasks: listener, ping loop, user input loop.
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
 import os
 import random
@@ -14,6 +15,9 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Optional
+
+# Max entries kept in seen set / message store before oldest are evicted.
+SEEN_SET_MAX = 10_000
 
 from .config import GossipConfig
 from .message import Message
@@ -48,8 +52,9 @@ class GossipNode:
 
         # state
         self.peers: dict[str, PeerInfo] = {}   # addr -> PeerInfo
-        self.seen: set[str] = set()            # msg_ids we already processed
-        self.message_store: dict[str, Message] = {}  # msg_id -> full message (for IWANT)
+        # Bounded ordered containers — oldest entries evicted when full.
+        self.seen: collections.OrderedDict[str, bool] = collections.OrderedDict()
+        self.message_store: collections.OrderedDict[str, Message] = collections.OrderedDict()
 
         # networking (set up in run())
         self.transport: Optional[asyncio.DatagramTransport] = None
@@ -209,8 +214,7 @@ class GossipNode:
         if msg.msg_id in self.seen:
             return  # duplicate
 
-        self.seen.add(msg.msg_id)
-        self.message_store[msg.msg_id] = msg
+        self._mark_seen(msg.msg_id, msg)
 
         data_preview = str(msg.payload.get("data", ""))[:40]
         logger.info("GOSSIP recv  msg_id=%s  data=%s  ttl=%d",
@@ -266,6 +270,21 @@ class GossipNode:
                     msg_id=stored.msg_id,
                 )
                 self._send_to_addr(fwd, msg.sender_addr)
+
+    # -- seen-set management --------------------------------------------------
+
+    def _mark_seen(self, msg_id: str, msg: Message | None = None):
+        """Record a msg_id as seen.  Stores the full message if provided.
+
+        Evicts the oldest entries when the bounded capacity is reached.
+        """
+        self.seen[msg_id] = True
+        if msg is not None:
+            self.message_store[msg_id] = msg
+        # evict oldest if over capacity
+        while len(self.seen) > SEEN_SET_MAX:
+            oldest_id, _ = self.seen.popitem(last=False)
+            self.message_store.pop(oldest_id, None)
 
     # -- gossip forwarding ----------------------------------------------------
 
@@ -361,8 +380,8 @@ class GossipNode:
             if not self.peers or not self.seen:
                 continue
 
-            # pick recent msg_ids to announce
-            recent_ids = list(self.seen)[-self.cfg.ihave_max_ids:]
+            # pick most recent msg_ids to announce (OrderedDict keeps insertion order)
+            recent_ids = list(self.seen.keys())[-self.cfg.ihave_max_ids:]
 
             # send to fanout peers
             k = min(self.cfg.fanout, len(self.peers))
@@ -402,8 +421,7 @@ class GossipNode:
         msg = Message.gossip(self.node_id, self.addr,
                              data=data, origin_id=self.node_id,
                              ttl=self.cfg.ttl)
-        self.seen.add(msg.msg_id)
-        self.message_store[msg.msg_id] = msg
+        self._mark_seen(msg.msg_id, msg)
         logger.info("GOSSIP new   msg_id=%s  data=%s", msg.msg_id[:8], data[:40])
 
         candidates = list(self.peers.keys())
