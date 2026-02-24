@@ -5,59 +5,16 @@ Runs a 10-node network in both modes, injects a gossip message,
 and compares delivery and message overhead.
 """
 
-import os
 import re
-import subprocess
 import sys
 import time
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LOG_DIR = os.path.join(ROOT, "logs")
-PYTHON = sys.executable
+from helpers import (check, clean_logs, kill_all, launch_node, read_log,
+                     reset_counters, summary)
 
 BASE_PORT_PUSH = 9300
 BASE_PORT_HYBRID = 9400
 N = 10
-PASS = 0
-FAIL = 0
-
-
-def check(name: str, condition: bool):
-    global PASS, FAIL
-    if condition:
-        PASS += 1
-        print(f"  PASS  {name}")
-    else:
-        FAIL += 1
-        print(f"  FAIL  {name}")
-
-
-def launch_node(port, bootstrap=None, seed=42, mode="push"):
-    cmd = [PYTHON, "-m", "gossip",
-           "--port", str(port),
-           "--fanout", "3",
-           "--ttl", "8",
-           "--peer-limit", "20",
-           "--ping-interval", "1",
-           "--peer-timeout", "5",
-           "--seed", str(seed),
-           "--mode", mode,
-           "--pull-interval", "1",
-           "--ihave-max-ids", "32"]
-    if bootstrap:
-        cmd += ["--bootstrap", bootstrap]
-    return subprocess.Popen(
-        cmd, cwd=ROOT, stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-    )
-
-
-def read_log(port):
-    path = os.path.join(LOG_DIR, f"node_{port}.log")
-    if os.path.exists(path):
-        with open(path) as f:
-            return f.read()
-    return ""
 
 
 def count_sent(log_text):
@@ -67,11 +24,7 @@ def count_sent(log_text):
 def run_test(base_port, mode, label):
     """Run N nodes, inject gossip, return (delivery_count, total_sent)."""
     print(f"\n--- {label} ---")
-
-    # clean logs
-    os.makedirs(LOG_DIR, exist_ok=True)
-    for f in os.listdir(LOG_DIR):
-        os.remove(os.path.join(LOG_DIR, f))
+    clean_logs()
 
     procs = []
     try:
@@ -88,27 +41,17 @@ def run_test(base_port, mode, label):
         print(f"  waiting 6s for bootstrap ...")
         time.sleep(6)
 
-        # inject gossip
         msg = f"HYBRID_TEST_{mode.upper()}"
         print(f"  injecting: {msg}")
         procs[0].stdin.write((msg + "\n").encode())
         procs[0].stdin.flush()
 
-        # wait for propagation (longer for hybrid to exercise pull)
         wait = 8 if mode == "hybrid" else 5
         print(f"  waiting {wait}s for propagation ...")
         time.sleep(wait)
-
     finally:
-        for p in procs:
-            p.terminate()
-        for p in procs:
-            try:
-                p.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                p.kill()
+        kill_all(procs)
 
-    # count delivery
     delivery = 0
     total_sent = 0
     for i in range(N):
@@ -126,6 +69,7 @@ def run_test(base_port, mode, label):
 
 def main():
     print("=== Hybrid Push-Pull Test ===")
+    reset_counters()
 
     push_delivery, push_sent = run_test(BASE_PORT_PUSH, "push", "Push-Only")
     hybrid_delivery, hybrid_sent = run_test(BASE_PORT_HYBRID, "hybrid",
@@ -140,13 +84,7 @@ def main():
     check("hybrid has more messages (IHAVE/IWANT overhead)",
           hybrid_sent >= push_sent)
 
-    print(f"\n{'='*40}")
-    print(f"Results: {PASS} passed, {FAIL} failed")
-    if FAIL > 0:
-        print("\nFailed — check logs/ for details")
-        sys.exit(1)
-    else:
-        print("All hybrid tests passed!")
+    sys.exit(summary("Hybrid test"))
 
 
 if __name__ == "__main__":

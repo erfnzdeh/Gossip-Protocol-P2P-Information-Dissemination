@@ -9,7 +9,6 @@ Tests:
 """
 
 import os
-import subprocess
 import sys
 import time
 
@@ -18,21 +17,8 @@ sys.path.insert(0, ROOT)
 
 from gossip.pow import compute_pow, validate_pow
 
-LOG_DIR = os.path.join(ROOT, "logs")
-PYTHON = sys.executable
-
-PASS = 0
-FAIL = 0
-
-
-def check(name: str, condition: bool):
-    global PASS, FAIL
-    if condition:
-        PASS += 1
-        print(f"  PASS  {name}")
-    else:
-        FAIL += 1
-        print(f"  FAIL  {name}")
+from helpers import (check, clean_logs, kill_all, launch_node, read_log,
+                     reset_counters, summary)
 
 
 def test_pow_computation():
@@ -54,20 +40,12 @@ def test_pow_validation():
     node_id = "validation-test-node"
     result = compute_pow(node_id, 3)
 
-    # valid PoW should pass
     check("valid PoW accepted", validate_pow(node_id, result, 3))
-
-    # wrong node_id should fail
     check("wrong node_id rejected", not validate_pow("wrong-id", result, 3))
 
-    # wrong nonce should fail
     bad_nonce = dict(result, nonce=result["nonce"] + 1)
     check("wrong nonce rejected", not validate_pow(node_id, bad_nonce, 3))
-
-    # insufficient difficulty should fail
     check("low difficulty rejected", not validate_pow(node_id, result, 10))
-
-    # None/empty should fail
     check("None rejected", not validate_pow(node_id, None, 3))
     check("empty dict rejected", not validate_pow(node_id, {}, 3))
 
@@ -92,138 +70,66 @@ def test_pow_timing():
 
 def test_pow_integration():
     print("\n--- PoW integration (3 nodes with pow_k=3) ---")
-
-    os.makedirs(LOG_DIR, exist_ok=True)
-    for f in os.listdir(LOG_DIR):
-        os.remove(os.path.join(LOG_DIR, f))
-
-    def launch(port, bootstrap=None):
-        cmd = [PYTHON, "-m", "gossip",
-               "--port", str(port),
-               "--fanout", "3", "--ttl", "8",
-               "--ping-interval", "1", "--peer-timeout", "5",
-               "--seed", str(port),
-               "--pow-k", "3"]
-        if bootstrap:
-            cmd += ["--bootstrap", bootstrap]
-        return subprocess.Popen(
-            cmd, cwd=ROOT, stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        )
+    clean_logs()
 
     procs = []
     try:
-        procs.append(launch(9500))
+        procs.append(launch_node(9500, seed=9500, pow_k=3))
         time.sleep(1)
-        procs.append(launch(9501, "127.0.0.1:9500"))
-        procs.append(launch(9502, "127.0.0.1:9500"))
+        procs.append(launch_node(9501, bootstrap="127.0.0.1:9500",
+                                 seed=9501, pow_k=3))
+        procs.append(launch_node(9502, bootstrap="127.0.0.1:9500",
+                                 seed=9502, pow_k=3))
         print("  waiting 8s for PoW + bootstrap ...")
         time.sleep(8)
 
-        # inject gossip
         procs[0].stdin.write(b"POW_TEST_MSG\n")
         procs[0].stdin.flush()
         time.sleep(3)
-
     finally:
-        for p in procs:
-            p.terminate()
-        for p in procs:
-            try:
-                p.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                p.kill()
-
-    # check logs
-    def read_log(port):
-        path = os.path.join(LOG_DIR, f"node_{port}.log")
-        if os.path.exists(path):
-            with open(path) as f:
-                return f.read()
-        return ""
+        kill_all(procs)
 
     log0 = read_log(9500)
     log1 = read_log(9501)
     log2 = read_log(9502)
 
     check("seed accepted HELLO from 9501",
-          "HELLO from 127.0.0.1:9501" in log0 and "rejected" not in log0.split("9501")[0][-100:])
+          "HELLO from 127.0.0.1:9501" in log0
+          and "rejected" not in log0.split("9501")[0][-100:])
     check("node 9501 has peer 9500", "peer added   127.0.0.1:9500" in log1)
     check("node 9502 has peer 9500", "peer added   127.0.0.1:9500" in log2)
 
-    # check gossip delivery
-    delivery = 0
-    for port in [9500, 9501, 9502]:
-        log = read_log(port)
-        if "POW_TEST_MSG" in log:
-            delivery += 1
+    delivery = sum(1 for port in [9500, 9501, 9502]
+                   if "POW_TEST_MSG" in read_log(port))
     check(f"gossip reached {delivery}/3 nodes", delivery >= 2)
 
 
 def test_pow_rejection():
     print("\n--- PoW rejection (node without PoW vs node requiring it) ---")
-
-    os.makedirs(LOG_DIR, exist_ok=True)
-    for f in os.listdir(LOG_DIR):
-        os.remove(os.path.join(LOG_DIR, f))
-
-    def launch(port, bootstrap=None, pow_k=0):
-        cmd = [PYTHON, "-m", "gossip",
-               "--port", str(port),
-               "--fanout", "3", "--ttl", "8",
-               "--ping-interval", "1", "--peer-timeout", "5",
-               "--seed", str(port),
-               "--pow-k", str(pow_k)]
-        if bootstrap:
-            cmd += ["--bootstrap", bootstrap]
-        return subprocess.Popen(
-            cmd, cwd=ROOT, stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        )
+    clean_logs()
 
     procs = []
     try:
-        # seed requires PoW
-        procs.append(launch(9600, pow_k=4))
+        procs.append(launch_node(9600, seed=9600, pow_k=4))
         time.sleep(1)
-        # joiner does NOT provide PoW
-        procs.append(launch(9601, bootstrap="127.0.0.1:9600", pow_k=0))
+        procs.append(launch_node(9601, bootstrap="127.0.0.1:9600",
+                                 seed=9601, pow_k=0))
         time.sleep(4)
     finally:
-        for p in procs:
-            p.terminate()
-        for p in procs:
-            try:
-                p.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                p.kill()
-
-    def read_log(port):
-        path = os.path.join(LOG_DIR, f"node_{port}.log")
-        if os.path.exists(path):
-            with open(path) as f:
-                return f.read()
-        return ""
+        kill_all(procs)
 
     log0 = read_log(9600)
-    check("seed rejected HELLO without PoW", "rejected" in log0.lower() or
-          "invalid PoW" in log0)
-    # joiner should NOT have been added as peer
+    check("seed rejected HELLO without PoW",
+          "rejected" in log0.lower() or "invalid PoW" in log0)
     check("joiner not in seed's peer list",
           "peer added   127.0.0.1:9601" not in log0)
 
 
 if __name__ == "__main__":
+    reset_counters()
     test_pow_computation()
     test_pow_validation()
     test_pow_timing()
     test_pow_integration()
     test_pow_rejection()
-
-    print(f"\n{'='*40}")
-    print(f"Results: {PASS} passed, {FAIL} failed")
-    if FAIL > 0:
-        print("\nFailed — check logs/ for details")
-        sys.exit(1)
-    else:
-        print("All PoW tests passed!")
+    sys.exit(summary("PoW test"))
