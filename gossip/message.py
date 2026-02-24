@@ -74,7 +74,9 @@ class Message:
               pow_data: Optional[dict] = None) -> "Message":
         payload: dict[str, Any] = {"capabilities": ["udp", "json"]}
         if pow_data is not None:
-            payload["pow"] = pow_data
+            # Strip local-only fields (elapsed_ms) before sending on the wire
+            payload["pow"] = {k: v for k, v in pow_data.items()
+                              if k != "elapsed_ms"}
         return cls(msg_type="HELLO", sender_id=sender_id,
                    sender_addr=sender_addr, payload=payload)
 
