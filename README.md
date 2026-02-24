@@ -258,9 +258,11 @@ The analyzer:
 
 ## Performance Results
 
-Results from simulation with fanout=3, TTL=8, 5 seeds per configuration:
+Results from simulation with fanout=3, TTL=8, 5 seeds per configuration.
 
 ### Convergence Time & Overhead vs Network Size (Push Mode)
+
+![Performance vs N — Push Mode](docs/charts/performance_vs_N_push.png)
 
 | N  | Convergence (ms) | Overhead (msgs) | Delivery       |
 |----|-------------------|-----------------|----------------|
@@ -268,7 +270,25 @@ Results from simulation with fanout=3, TTL=8, 5 seeds per configuration:
 | 20 | 2 +/- 1          | 52 +/- 5        | 95.0% +/- 5.5% |
 | 50 | 9 +/- 1          | 135 +/- 8       | 97.6% +/- 1.5% |
 
-### Effect of Fanout (Push Mode, N=50)
+### Effect of Fanout (Push Mode)
+
+<details>
+<summary>N = 10</summary>
+
+![Fanout Effect — N=10](docs/charts/fanout_effect_N10_push.png)
+</details>
+
+<details>
+<summary>N = 20</summary>
+
+![Fanout Effect — N=20](docs/charts/fanout_effect_N20_push.png)
+</details>
+
+<details>
+<summary>N = 50</summary>
+
+![Fanout Effect — N=50](docs/charts/fanout_effect_N50_push.png)
+</details>
 
 | Fanout | Convergence (ms) | Overhead (msgs) | Delivery        |
 |--------|-------------------|-----------------|-----------------|
@@ -283,12 +303,18 @@ Results from simulation with fanout=3, TTL=8, 5 seeds per configuration:
 
 ### Push vs Hybrid (fanout=3, TTL=8)
 
+![Push vs Hybrid](docs/charts/push_vs_hybrid.png)
+
 | N  | Mode   | Convergence (ms) | Overhead (msgs) | Delivery        |
 |----|--------|-------------------|-----------------|-----------------|
 | 10 | push   | 1 +/- 0          | 23 +/- 3        | 98.0% +/- 4.0%  |
 | 10 | hybrid | 2 +/- 1          | 25 +/- 6        | 100.0% +/- 0.0% |
 | 50 | push   | 9 +/- 1          | 135 +/- 8       | 97.6% +/- 1.5%  |
 | 50 | hybrid | 8 +/- 4          | 143 +/- 4       | 100.0% +/- 0.0% |
+
+### Convergence Time & Overhead vs Network Size (Hybrid Mode)
+
+![Performance vs N — Hybrid Mode](docs/charts/performance_vs_N_hybrid.png)
 
 **Observations:**
 - Hybrid mode consistently achieves 100% delivery by recovering missed messages via IHAVE/IWANT.
