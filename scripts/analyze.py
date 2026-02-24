@@ -43,13 +43,11 @@ def parse_trial(trial_dir):
 
     Returns:
         gossip_events: list of (epoch_ms, port, msg_id, event_type)
-        total_sent: total messages sent across all nodes
-        sent_by_type: dict of msg_type -> count
-        n_nodes: number of nodes in the trial
+        sent_events:   list of (epoch_ms, msg_type_str)
+        n_nodes:       number of nodes in the trial
     """
     gossip_events = []
-    total_sent = 0
-    sent_by_type = defaultdict(int)
+    sent_events = []
     ports = set()
 
     for fname in sorted(os.listdir(trial_dir)):
@@ -74,15 +72,11 @@ def parse_trial(trial_dir):
                 if gn:
                     gossip_events.append((epoch_ms, port, gn.group(1), "new"))
 
-                sm = STATS_RE.search(body)
-                if sm:
-                    total_sent += int(sm.group(1))
-
                 st = SENT_RE.search(body)
                 if st:
-                    sent_by_type[st.group(1)] += 1
+                    sent_events.append((epoch_ms, st.group(1)))
 
-    return gossip_events, total_sent, sent_by_type, len(ports)
+    return gossip_events, sent_events, len(ports)
 
 
 def compute_metrics(trial_dir):
@@ -90,7 +84,7 @@ def compute_metrics(trial_dir):
 
     Returns dict with keys: convergence_ms, overhead, n_nodes, delivery_ratio
     """
-    events, total_sent, sent_by_type, n_nodes = parse_trial(trial_dir)
+    events, sent_events, n_nodes = parse_trial(trial_dir)
     if not events or n_nodes == 0:
         return None
 
@@ -117,15 +111,21 @@ def compute_metrics(trial_dir):
 
     if len(sorted_times) >= target_count:
         convergence_ms = sorted_times[target_count - 1] - t0
+        t_converged = sorted_times[target_count - 1]
     else:
         convergence_ms = sorted_times[-1] - t0 if sorted_times else 0
+        t_converged = sorted_times[-1] if sorted_times else t0
 
-    # prefer SENT line counts (always available) over STATS (may not flush)
-    sent_total = sum(sent_by_type.values()) if sent_by_type else total_sent
+    # count only messages sent within the gossip window [t0, t_converged]
+    sent_by_type = defaultdict(int)
+    for epoch_ms, msg_type in sent_events:
+        if t0 <= epoch_ms <= t_converged:
+            sent_by_type[msg_type] += 1
+    overhead = sum(sent_by_type.values())
 
     return {
         "convergence_ms": convergence_ms,
-        "overhead": sent_total,
+        "overhead": overhead,
         "n_nodes": n_nodes,
         "delivery_ratio": delivery_ratio,
         "delivery_count": delivery_count,
