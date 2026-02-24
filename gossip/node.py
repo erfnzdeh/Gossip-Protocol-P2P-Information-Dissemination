@@ -134,19 +134,31 @@ class GossipNode:
 
     # -- bootstrap ------------------------------------------------------------
 
-    async def _bootstrap(self):
-        """Join the network via the seed node."""
+    async def _bootstrap(self, max_attempts: int = 5):
+        """Join the network via the seed node, retrying if no peers appear."""
         seed_addr = self.cfg.bootstrap
         logger.info("bootstrap  -> %s", seed_addr)
 
-        # send HELLO (with PoW if enabled)
         hello = Message.hello(self.node_id, self.addr, pow_data=self.pow_data)
-        self._send_to_addr(hello, seed_addr)
-
-        # send GET_PEERS
         gp = Message.get_peers(self.node_id, self.addr,
                                max_peers=self.cfg.peer_limit)
-        self._send_to_addr(gp, seed_addr)
+
+        for attempt in range(1, max_attempts + 1):
+            self._send_to_addr(hello, seed_addr)
+            self._send_to_addr(gp, seed_addr)
+
+            await asyncio.sleep(0.5 * attempt)
+
+            if self.peers:
+                logger.info("bootstrap ok  peers=%d (attempt %d)",
+                            len(self.peers), attempt)
+                return
+
+            logger.info("bootstrap retry %d/%d — no peers yet",
+                        attempt, max_attempts)
+
+        logger.warning("bootstrap finished with 0 peers after %d attempts",
+                       max_attempts)
 
     # -- message dispatch -----------------------------------------------------
 
