@@ -23,8 +23,6 @@ from .config import GossipConfig
 from .message import Message
 from .pow import compute_pow, validate_pow
 
-logger = logging.getLogger("gossip")
-
 
 # ---------------------------------------------------------------------------
 # Peer bookkeeping
@@ -49,6 +47,7 @@ class GossipNode:
         self.node_id: str = uuid.uuid4().hex
         self.addr: str = config.self_addr
         self.rng = random.Random(config.seed)
+        self.log = logging.getLogger(f"gossip.{config.port}")
 
         # state
         self.peers: dict[str, PeerInfo] = {}   # addr -> PeerInfo
@@ -90,15 +89,15 @@ class GossipNode:
             local_addr=("127.0.0.1", self.cfg.port),
         )
 
-        logger.info("node started  id=%s  addr=%s", self.node_id, self.addr)
+        self.log.info("node started  id=%s  addr=%s", self.node_id, self.addr)
 
         # compute PoW if enabled (in executor to avoid blocking the event loop)
         if self.cfg.pow_k > 0:
-            logger.info("computing PoW  k=%d ...", self.cfg.pow_k)
+            self.log.info("computing PoW  k=%d ...", self.cfg.pow_k)
             self.pow_data = await self.loop.run_in_executor(
                 None, compute_pow, self.node_id, self.cfg.pow_k
             )
-            logger.info("PoW found  nonce=%d  digest=%s  elapsed=%.1fms",
+            self.log.info("PoW found  nonce=%d  digest=%s  elapsed=%.1fms",
                         self.pow_data["nonce"],
                         self.pow_data["digest_hex"][:16],
                         self.pow_data["elapsed_ms"])
@@ -114,7 +113,7 @@ class GossipNode:
         ]
         if self.cfg.mode == "hybrid":
             tasks.append(asyncio.create_task(self._pull_loop()))
-            logger.info("hybrid mode enabled  pull_interval=%s  ihave_max_ids=%d",
+            self.log.info("hybrid mode enabled  pull_interval=%s  ihave_max_ids=%d",
                         self.cfg.pull_interval, self.cfg.ihave_max_ids)
 
         try:
@@ -123,9 +122,9 @@ class GossipNode:
             pass
         finally:
             self.transport.close()
-            logger.info("STATS sent=%d peers=%d seen=%d",
+            self.log.info("STATS sent=%d peers=%d seen=%d",
                         self.stats_sent, len(self.peers), len(self.seen))
-            logger.info("node stopped")
+            self.log.info("node stopped")
 
     def stop(self):
         self._running = False
@@ -137,7 +136,7 @@ class GossipNode:
     async def _bootstrap(self, max_attempts: int = 5):
         """Join the network via the seed node, retrying if no peers appear."""
         seed_addr = self.cfg.bootstrap
-        logger.info("bootstrap  -> %s", seed_addr)
+        self.log.info("bootstrap  -> %s", seed_addr)
 
         hello = Message.hello(self.node_id, self.addr, pow_data=self.pow_data)
         gp = Message.get_peers(self.node_id, self.addr,
@@ -150,14 +149,14 @@ class GossipNode:
             await asyncio.sleep(0.5 * attempt)
 
             if self.peers:
-                logger.info("bootstrap ok  peers=%d (attempt %d)",
+                self.log.info("bootstrap ok  peers=%d (attempt %d)",
                             len(self.peers), attempt)
                 return
 
-            logger.info("bootstrap retry %d/%d — no peers yet",
+            self.log.info("bootstrap retry %d/%d — no peers yet",
                         attempt, max_attempts)
 
-        logger.warning("bootstrap finished with 0 peers after %d attempts",
+        self.log.warning("bootstrap finished with 0 peers after %d attempts",
                        max_attempts)
 
     # -- message dispatch -----------------------------------------------------
@@ -166,7 +165,7 @@ class GossipNode:
         """Called by the UDP protocol when a packet arrives."""
         msg = Message.from_bytes(data)
         if msg is None:
-            logger.warning("bad packet from %s:%d", *addr)
+            self.log.warning("bad packet from %s:%d", *addr)
             return
 
         handler = {
@@ -186,13 +185,13 @@ class GossipNode:
     # -- handlers -------------------------------------------------------------
 
     def _handle_hello(self, msg: Message):
-        logger.info("HELLO from %s (%s)", msg.sender_addr, msg.sender_id[:8])
+        self.log.info("HELLO from %s (%s)", msg.sender_addr, msg.sender_id[:8])
 
         # validate PoW if required
         if self.cfg.pow_k > 0:
             pow_data = msg.payload.get("pow")
             if not validate_pow(msg.sender_id, pow_data, self.cfg.pow_k):
-                logger.warning("HELLO rejected: invalid PoW from %s",
+                self.log.warning("HELLO rejected: invalid PoW from %s",
                                msg.sender_addr)
                 return
 
@@ -203,11 +202,11 @@ class GossipNode:
 
     def _handle_get_peers(self, msg: Message):
         max_peers = msg.payload.get("max_peers", 20)
-        logger.info("GET_PEERS from %s (max=%d)", msg.sender_addr, max_peers)
+        self.log.info("GET_PEERS from %s (max=%d)", msg.sender_addr, max_peers)
 
         # only add sender as peer if PoW not required or already known
         if self.cfg.pow_k > 0 and msg.sender_addr not in self.peers:
-            logger.warning("GET_PEERS ignored: %s not authenticated (no HELLO with PoW)",
+            self.log.warning("GET_PEERS ignored: %s not authenticated (no HELLO with PoW)",
                            msg.sender_addr)
             return
 
@@ -216,7 +215,7 @@ class GossipNode:
 
     def _handle_peers_list(self, msg: Message):
         peers = msg.payload.get("peers", [])
-        logger.info("PEERS_LIST from %s  (%d peers)", msg.sender_addr, len(peers))
+        self.log.info("PEERS_LIST from %s  (%d peers)", msg.sender_addr, len(peers))
         self._add_peer(msg.sender_id, msg.sender_addr)
         for p in peers:
             pid = p.get("node_id", "")
@@ -231,7 +230,7 @@ class GossipNode:
         self._mark_seen(msg.msg_id, msg)
 
         data_preview = str(msg.payload.get("data", ""))[:40]
-        logger.info("GOSSIP recv  msg_id=%s  data=%s  ttl=%d",
+        self.log.info("GOSSIP recv  msg_id=%s  data=%s  ttl=%d",
                      msg.msg_id[:8], data_preview, msg.ttl)
 
         # add sender as peer
@@ -255,7 +254,7 @@ class GossipNode:
         ping_id = msg.payload.get("ping_id", "")
         if ping_id in self._pending_pings:
             rtt_ms = (time.time() - self._pending_pings.pop(ping_id)) * 1000
-            logger.debug("PONG from %s  rtt=%.1fms", msg.sender_addr, rtt_ms)
+            self.log.debug("PONG from %s  rtt=%.1fms", msg.sender_addr, rtt_ms)
         self._add_peer(msg.sender_id, msg.sender_addr)
 
     def _handle_ihave(self, msg: Message):
@@ -322,7 +321,7 @@ class GossipNode:
         )
         for target_addr in targets:
             self._send_to_addr(fwd, target_addr)
-            logger.info("GOSSIP fwd   msg_id=%s -> %s  ttl=%d",
+            self.log.info("GOSSIP fwd   msg_id=%s -> %s  ttl=%d",
                          original.msg_id[:8], target_addr, new_ttl)
 
     # -- peer management ------------------------------------------------------
@@ -339,18 +338,18 @@ class GossipNode:
         if len(self.peers) >= self.cfg.peer_limit:
             self._evict_oldest_peer()
         self.peers[addr] = PeerInfo(node_id=node_id, addr=addr)
-        logger.info("peer added   %s (%s)", addr, node_id[:8] if node_id else "?")
+        self.log.info("peer added   %s (%s)", addr, node_id[:8] if node_id else "?")
 
     def _evict_oldest_peer(self):
         if not self.peers:
             return
         oldest_addr = min(self.peers, key=lambda a: self.peers[a].last_seen)
-        logger.info("peer evicted %s", oldest_addr)
+        self.log.info("peer evicted %s", oldest_addr)
         del self.peers[oldest_addr]
 
     def _remove_peer(self, addr: str):
         if addr in self.peers:
-            logger.info("peer removed %s (timeout)", addr)
+            self.log.info("peer removed %s (timeout)", addr)
             del self.peers[addr]
 
     def _send_peers_list(self, target_addr: str, max_peers: int = 20):
@@ -444,12 +443,12 @@ class GossipNode:
                              data=data, origin_id=self.node_id,
                              ttl=self.cfg.ttl)
         self._mark_seen(msg.msg_id, msg)
-        logger.info("GOSSIP new   msg_id=%s  data=%s", msg.msg_id[:8], data[:40])
+        self.log.info("GOSSIP new   msg_id=%s  data=%s", msg.msg_id[:8], data[:40])
 
         candidates = list(self.peers.keys())
         k = min(self.cfg.fanout, len(candidates))
         if k == 0:
-            logger.warning("no peers to gossip to")
+            self.log.warning("no peers to gossip to")
             return
         targets = self.rng.sample(candidates, k)
         for addr in targets:
@@ -465,9 +464,9 @@ class GossipNode:
             host, port_s = addr.rsplit(":", 1)
             self.transport.sendto(msg.to_bytes(), (host, int(port_s)))
             self.stats_sent += 1
-            logger.debug("SENT %s -> %s", msg.msg_type, addr)
+            self.log.debug("SENT %s -> %s", msg.msg_type, addr)
         except Exception as exc:
-            logger.warning("send failed -> %s: %s", addr, exc)
+            self.log.warning("send failed -> %s: %s", addr, exc)
 
     # -- logging setup --------------------------------------------------------
 
@@ -499,12 +498,13 @@ class GossipNode:
         ch.setFormatter(formatter)
         ch.setLevel(logging.INFO)
 
-        root = logging.getLogger("gossip")
-        root.setLevel(logging.DEBUG)
-        # avoid duplicate handlers on re-runs
-        root.handlers.clear()
-        root.addHandler(fh)
-        root.addHandler(ch)
+        self.log.setLevel(logging.DEBUG)
+        # avoid duplicate handlers on re-runs in same process
+        self.log.handlers.clear()
+        self.log.addHandler(fh)
+        self.log.addHandler(ch)
+        # prevent propagation to root logger (avoids duplicate output)
+        self.log.propagate = False
 
 
 # ---------------------------------------------------------------------------
@@ -519,4 +519,4 @@ class _UDPProtocol(asyncio.DatagramProtocol):
         self.node._on_datagram(data, addr)
 
     def error_received(self, exc: Exception):
-        logger.warning("UDP error: %s", exc)
+        self.node.log.warning("UDP error: %s", exc)
