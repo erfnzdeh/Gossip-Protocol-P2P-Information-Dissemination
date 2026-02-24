@@ -11,6 +11,7 @@ import collections
 import logging
 import os
 import random
+import signal
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -86,6 +87,7 @@ class GossipNode:
 
         # graceful shutdown
         self._running = False
+        self._tasks: list[asyncio.Task] = []
 
     # -- public API -----------------------------------------------------------
 
@@ -94,6 +96,14 @@ class GossipNode:
         self.loop = asyncio.get_running_loop()
         self._running = True
         self._setup_logging()
+
+        # register SIGINT handler for graceful Ctrl-C shutdown.
+        # SIGTERM is left at its default (immediate kill) so that
+        # subprocess.Popen.terminate() still works in tests.
+        try:
+            self.loop.add_signal_handler(signal.SIGINT, self.stop)
+        except NotImplementedError:
+            pass  # Windows doesn't support add_signal_handler
 
         # create UDP endpoint
         self.transport, _ = await self.loop.create_datagram_endpoint(
@@ -119,17 +129,17 @@ class GossipNode:
             await self._bootstrap()
 
         # run concurrent tasks
-        tasks = [
+        self._tasks = [
             asyncio.create_task(self._ping_loop()),
             asyncio.create_task(self._input_loop()),
         ]
         if self.cfg.mode == "hybrid":
-            tasks.append(asyncio.create_task(self._pull_loop()))
+            self._tasks.append(asyncio.create_task(self._pull_loop()))
             self.log.info("hybrid mode enabled  pull_interval=%s  ihave_max_ids=%d",
                         self.cfg.pull_interval, self.cfg.ihave_max_ids)
 
         try:
-            await asyncio.gather(*tasks)
+            await asyncio.gather(*self._tasks)
         except asyncio.CancelledError:
             pass
         finally:
@@ -139,8 +149,9 @@ class GossipNode:
             self.log.info("node stopped")
 
     def stop(self):
+        """Cancel only this node's own tasks (not all tasks in the loop)."""
         self._running = False
-        for task in asyncio.all_tasks(self.loop):
+        for task in self._tasks:
             task.cancel()
 
     # -- bootstrap ------------------------------------------------------------
