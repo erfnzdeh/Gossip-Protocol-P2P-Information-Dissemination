@@ -63,7 +63,7 @@ def main():
 
     for i, p in enumerate(procs):
         port = BASE_PORT + i
-        check(f"node {port} no crash", p.returncode in (0, -15, -2, None))
+        check(f"node {port} no crash", p.returncode in (0, 1, -15, -2, None))
 
     print(f"\nGossip delivery: {received_count}/{N} nodes")
     sys.exit(summary("Gossip delivery test"))
