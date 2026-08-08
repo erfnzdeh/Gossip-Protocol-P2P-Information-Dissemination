@@ -1,5 +1,7 @@
 # Gossip Protocol for P2P Information Dissemination
 
+![license](https://img.shields.io/github/license/erfnzdeh/Gossip-Protocol-P2P-Information-Dissemination) ![language](https://img.shields.io/badge/language-Python-3776AB?logo=python&logoColor=white) ![transport](https://img.shields.io/badge/transport-UDP-orange)
+
 A complete Python implementation of a Gossip (epidemic) protocol for peer-to-peer information dissemination over UDP. Implemented for the **[Computer Networks (40443)](https://docs.ce.sharif.edu/courses/40443)** course, instructed by [Dr. Amirmehdi Sadeghzadeh](https://github.com/amsadeghzadeh).
 
 The protocol supports push-based gossip, hybrid push-pull dissemination, and SHA-256 Proof-of-Work for Sybil resistance. It includes an automated simulation framework and statistical analysis tooling.
